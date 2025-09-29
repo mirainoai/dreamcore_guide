@@ -7,6 +7,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, g
 from werkzeug.utils import secure_filename
 from db_config import get_db_connection, create_tables # db_configから関数をインポート
 import psycopg2
+from psycopg2 import sql, extras
 
 # ------------------------------
 # 1. アプリケーション設定
@@ -29,6 +30,7 @@ def get_db():
     if 'db' not in g:
         try:
             # db_config.pyの関数を使って接続
+            # row_factoryとしてextras.DictCursorを使用し、結果を辞書形式で取得
             g.db = get_db_connection()
         except Exception as e:
             # 接続失敗は致命的
@@ -79,9 +81,7 @@ def login_required(view):
 # ------------------------------
 
 # Renderでの初回デプロイ時のみテーブルを作成するための処理
-# 環境変数RUN_MIGRATIONSが'True'の場合にcreate_tablesを実行する
 if os.environ.get('RUN_MIGRATIONS') == 'True':
-    # この処理はgunicorn起動時に一度だけ実行される
     print("--- 💡 Running initial database setup (Migrations)... ---")
     try:
         create_tables()
@@ -96,7 +96,7 @@ if os.environ.get('RUN_MIGRATIONS') == 'True':
 @app.route('/')
 def index():
     db = get_db()
-    cursor = db.cursor()
+    cursor = db.cursor(cursor_factory=extras.DictCursor) # DictCursorを使用
     
     # ユーザー名とゲーム情報を結合して取得
     sql = """
@@ -111,7 +111,7 @@ def index():
         cursor.execute(sql)
         games = cursor.fetchall()
     except psycopg2.errors.UndefinedTable:
-        # 'games'テーブルがまだ存在しない場合の例外処理（初回デプロイ時など）
+        # 'games'テーブルがまだ存在しない場合の例外処理
         games = []
         app.logger.warning("Warning: 'games' table does not exist. Returning empty list.")
     except Exception as e:
@@ -130,7 +130,8 @@ def login():
         username = request.form['username']
         password = request.form['password']
         db = get_db()
-        cursor = db.cursor()
+        # DictCursorを使用
+        cursor = db.cursor(cursor_factory=extras.DictCursor) 
         
         # ユーザー情報を取得
         sql = "SELECT id, password_hash, username FROM users WHERE username = %s;"
@@ -139,6 +140,7 @@ def login():
             user = cursor.fetchone()
         except Exception as e:
             db.rollback()
+            # 💡 テンプレート名を確認
             return render_template('login.html', error=f"データベースエラー: {e}")
 
         # パスワードチェック
@@ -148,8 +150,10 @@ def login():
             session['username'] = user['username']
             return redirect(url_for('index'))
         else:
+            # 💡 テンプレート名を確認
             return render_template('login.html', error='ユーザー名またはパスワードが違います')
     
+    # 💡 テンプレート名を確認
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -159,6 +163,7 @@ def register():
         password = request.form['password']
         
         if len(username) < 3 or len(password) < 6:
+             # 💡 テンプレート名を確認
              return render_template('login.html', error='ユーザー名は3文字以上、パスワードは6文字以上が必要です', is_register=True)
 
         hashed_password = hash_password(password)
@@ -174,11 +179,14 @@ def register():
         except psycopg2.errors.UniqueViolation:
             # ユーザー名重複エラー
             db.rollback()
+            # 💡 テンプレート名を確認
             return render_template('login.html', error='そのユーザー名は既に使用されています', is_register=True)
         except Exception as e:
             db.rollback()
+            # 💡 テンプレート名を確認
             return render_template('login.html', error=f"データベースエラー: {e}", is_register=True)
             
+    # 💡 テンプレート名を確認
     return render_template('login.html', is_register=True)
 
 @app.route('/logout')
@@ -200,13 +208,14 @@ def create_game():
             return render_template('create_game.html', error="タイトルは必須です")
 
         db = get_db()
-        cursor = db.cursor()
+        cursor = db.cursor(cursor_factory=extras.DictCursor) # DictCursorを使用
         
-        # 🚨 PostgreSQL対応: RETURNING id で新しいIDを取得
+        # PostgreSQL対応: RETURNING id で新しいIDを取得
         sql = "INSERT INTO games (title, user_id, game_url) VALUES (%s, %s, %s) RETURNING id;"
         
         try:
             cursor.execute(sql, (title, user_id, game_url))
+            # RETURNINGでIDを取得し、カーソルをクリア
             new_game_id = cursor.fetchone()['id']
             db.commit()
             return redirect(url_for('game_thread', game_id=new_game_id))
@@ -218,12 +227,13 @@ def create_game():
 
 # --- スレッド詳細とコメント投稿 ---
 
-@app.route('/game/<int:game_id>', methods=['GET', 'POST'])
+@app.route('/thread/<int:game_id>', methods=['GET', 'POST']) # ルーティングを '/thread/' に修正
 def game_thread(game_id):
     db = get_db()
-    cursor = db.cursor()
+    # DictCursorを使用
+    cursor = db.cursor(cursor_factory=extras.DictCursor) 
     
-    # 投稿処理 (Internal Server Errorの原因箇所)
+    # 投稿処理
     if request.method == 'POST':
         # ログインチェック
         if 'logged_in' not in session or not session['logged_in']:
@@ -236,36 +246,30 @@ def game_thread(game_id):
 
         # 1. ファイルアップロード処理
         if media_file and media_file.filename != '' and allowed_file(media_file.filename):
-            # ファイル名を安全に処理し、保存
             filename = secure_filename(media_file.filename)
-            # タイムスタンプを付加してファイル名の衝突を防ぐ
             media_filename = f"{int(time.time())}_{filename}"
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], media_filename)
             media_file.save(filepath)
             
         if not content and not media_filename:
-            # 内容もファイルもない場合はエラー
-            return redirect(url_for('game_thread', game_id=game_id)) # エラーメッセージなしでリダイレクト
+            # 内容もファイルもない場合はリダイレクト
+            return redirect(url_for('game_thread', game_id=game_id)) 
 
         # 2. データベース挿入
         try:
-            # 🚨 修正箇所: RETURNING id を使用
+            # 🚨 PostgreSQL対応: RETURNING id で新しいIDを取得
             sql = "INSERT INTO posts (game_id, user_id, content, media_url) VALUES (%s, %s, %s, %s) RETURNING id;"
             cursor.execute(sql, (game_id, user_id, content, media_filename))
             
-            # 🚨 **Internal Server Error解消の鍵**: 
-            # PostgreSQLでRETURNINGを使用したら、DBをコミットする前に必ずfetchone()でカーソルをクリアする必要があります。
+            # 🚨 Internal Server Error解消の鍵: RETURNINGを使用したら、必ずfetchone()でカーソルをクリアする
             cursor.fetchone() 
             
             db.commit()
             return redirect(url_for('game_thread', game_id=game_id))
         
         except Exception as e:
-            # データベースエラーの場合はロールバック
             db.rollback()
-            # 開発中はエラーを表示してデバッグを容易にする
             app.logger.error(f"Post error on game {game_id}: {e}")
-            # 本番環境ではInternal Server Errorを表示
             return f"コメント投稿時のデータベースエラーが発生しました: {e}"
 
     # GET リクエスト (スレッド表示)
@@ -289,6 +293,7 @@ def game_thread(game_id):
     SELECT 
         p.id, p.content, p.media_url, p.created_at, u.username, 
         COUNT(l.id) AS like_count,
+        -- is_likedではなく、user_likedという名前でいいね状態を直接取得
         EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = %s) AS user_liked
     FROM posts p 
     JOIN users u ON p.user_id = u.id
@@ -298,10 +303,12 @@ def game_thread(game_id):
     ORDER BY p.created_at ASC;
     """
     
-    # ログインしていればユーザーIDを渡し、いいね状況を取得
     current_user_id = session.get('user_id', -1) 
     cursor.execute(posts_sql, (current_user_id, game_id))
     posts = cursor.fetchall()
+
+    # 🚨 前回エラーの原因となった、posts内の要素を操作する処理はここには含まれていません。
+    # なぜなら、SQLで user_liked を取得済みだからです。
     
     # テンプレートをレンダリング
     return render_template('game_thread.html', game=game, posts=posts, user_id=current_user_id)
@@ -327,10 +334,10 @@ def like_post(post_id):
             cursor.execute(delete_sql, (post_id, user_id))
         else:
             # 未「いいね」なら、挿入
-            # 🚨 PostgreSQL対応: RETURNING id を使用
+            # PostgreSQL対応: RETURNING id を使用
             insert_sql = "INSERT INTO likes (post_id, user_id) VALUES (%s, %s) RETURNING id;"
             cursor.execute(insert_sql, (post_id, user_id))
-            # 🚨 カーソルをクリア
+            # カーソルをクリア
             cursor.fetchone() 
         
         db.commit()
@@ -338,15 +345,44 @@ def like_post(post_id):
     except Exception as e:
         db.rollback()
         app.logger.error(f"Like/Unlike Error: {e}")
-        # エラーメッセージを返す代わりに、元のスレッドにリダイレクト
         return redirect(request.referrer or url_for('index'))
 
     # 元のページに戻る
     return redirect(request.referrer or url_for('index'))
 
 
+# --- スレッド削除 (仮に実装) ---
+@app.route('/delete_thread/<int:game_id>', methods=['POST'])
+@login_required
+def delete_thread(game_id):
+    user_id = session['user_id']
+    db = get_db()
+    cursor = db.cursor()
+    
+    try:
+        # スレッド作成者であるかを確認
+        cursor.execute("SELECT user_id FROM games WHERE id = %s;", (game_id,))
+        game = cursor.fetchone()
+
+        if game and game['user_id'] == user_id:
+            # 関連するいいねを削除
+            cursor.execute("DELETE FROM likes WHERE post_id IN (SELECT id FROM posts WHERE game_id = %s);", (game_id,))
+            # 関連するコメントを削除
+            cursor.execute("DELETE FROM posts WHERE game_id = %s;", (game_id,))
+            # スレッド本体を削除
+            cursor.execute("DELETE FROM games WHERE id = %s;", (game_id,))
+            db.commit()
+        else:
+            # 権限がない場合
+            pass 
+    except Exception as e:
+        db.rollback()
+        app.logger.error(f"Error deleting thread {game_id}: {e}")
+    
+    return redirect(url_for('index'))
+
+
 if __name__ == '__main__':
-    # 開発環境でuploadsフォルダが存在しない場合は作成
     if not os.path.exists('static/uploads'):
         os.makedirs('static/uploads')
     app.run(debug=True)
