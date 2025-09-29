@@ -141,6 +141,8 @@ def index():
 
 # --- ログイン・登録・ログアウト ---
 
+# ... (他の部分は変更なし)
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -157,47 +159,27 @@ def login():
             db.rollback()
             return render_template('login.html', error=f"データベースエラー: {e}")
 
-        if user and check_password(user['password_hash'], password):
+        # 1. ユーザーが存在するかチェック
+        if not user:
+             # ユーザーが見つからない場合
+             return render_template('login.html', error='ユーザー名が見つかりません')
+
+        # 2. パスワードをbcryptでチェック
+        # if user and check_password(user['password_hash'], password): # 🚨 元の行
+        if check_password(user['password_hash'], password):
+            # ログイン成功
             session['user_id'] = user['id']
             session['username'] = user['username']
             return redirect(url_for('index')) 
         else:
-            return render_template('login.html', error='ユーザー名またはパスワードが違います')
+            # パスワードが一致しない場合
+            # 🚨 警告: 実際の本番環境ではこのエラーはユーザーに表示すべきではありません
+            print(f"DEBUG: Password check failed for user {username}.")
+            return render_template('login.html', error='パスワードが違います')
     
     return render_template('login.html')
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        if len(username) < 3 or len(password) < 6:
-             return render_template('login.html', error='ユーザー名は3文字以上、パスワードは6文字以上が必要です', is_register=True)
-
-        hashed_password = hash_password(password)
-        db = get_db()
-        cursor = db.cursor()
-        
-        sql = "INSERT INTO users (username, password_hash) VALUES (%s, %s);"
-        try:
-            cursor.execute(sql, (username, hashed_password))
-            db.commit()
-            return redirect(url_for('login'))
-        except psycopg2.errors.UniqueViolation:
-            db.rollback()
-            return render_template('login.html', error='そのユーザー名は既に使用されています', is_register=True)
-        except Exception as e:
-            db.rollback()
-            return render_template('login.html', error=f"データベースエラー: {e}", is_register=True)
-            
-    return render_template('login.html', is_register=True)
-
-@app.route('/logout')
-def logout():
-    session.clear() 
-    return redirect(url_for('index'))
-
+# ... (他の部分は変更なし)
 # --- スレッド作成 ---
 
 @app.route('/create_game', methods=['GET', 'POST'])
