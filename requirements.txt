@@ -1,0 +1,7 @@
+Flask
+bcrypt
+python-dotenv
+thefuzz
+gunicorn
+psycopg2-binary
+SQLAlchemy

@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+.env
+
+# Database
+# もしローカルでSQLiteなどDBファイルを使う場合は追加
+*.db

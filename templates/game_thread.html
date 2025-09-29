@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ game.title }} - スレッド</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .sort-options a.active {
+            font-weight: bold;
+            color: black;
+            text-decoration: none;
+        }
+        .post-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .like-button {
+            border: 1px solid #ccc;
+            background-color: #f0f0f0;
+            cursor: pointer;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+        .like-button.liked {
+            background-color: #ff6347;
+            color: white;
+            border-color: #ff6347;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}">トップページに戻る</a>
+        <h1>{{ game.title }}</h1>
+        <hr>
+
+        {% if logged_in %}
+        <form method="POST" action="{{ url_for('game_thread', game_id=game.id) }}" enctype="multipart/form-data">
+            <textarea name="content" placeholder="コメントを入力" required></textarea>
+            <br>
+            <label for="media">画像/動画の選択：</label>
+            <input type="file" name="media" id="media" accept="image/*,video/*">
+            <button type="submit">投稿</button>
+        </form>
+        {% else %}
+        <p>投稿するには<a href="{{ url_for('index') }}">ログイン</a>してください。</p>
+        {% endif %}
+
+        <hr>
+        
+        <div class="sort-options">
+            並び替え:
+            <a href="{{ url_for('game_thread', game_id=game.id, post_sort='new') }}" class="{{ 'active' if post_sort_by == 'new' }}">新着順</a>
+            |
+            <a href="{{ url_for('game_thread', game_id=game.id, post_sort='likes') }}" class="{{ 'active' if post_sort_by == 'likes' }}">いいね数順</a>
+        </div>
+
+        <div class="posts-container">
+            {% for post in posts %}
+            <div class="post">
+                <p>
+                    <span style="font-weight: bold;">{{ post.post_number }}番目の投稿:</span> {{ post.content }}
+                </p>
+                {% if post.media_url %}
+                {% set filename = post.media_url | lower %}
+                {% if filename.endswith(('.jpg', '.jpeg', '.png', '.gif')) %}
+                <img src="{{ url_for('static', filename='uploads/' + post.media_url) }}" alt="投稿画像" style="max-width: 100%; height: auto;">
+                {% elif filename.endswith(('.mp4', '.webm')) %}
+                <video controls style="max-width: 100%; height: auto;">
+                    <source src="{{ url_for('static', filename='uploads/' + post.media_url) }}" type="video/mp4">
+                    ブラウザが動画をサポートしていません。
+                </video>
+                {% endif %}
+                {% endif %}
+                <div class="post-footer">
+                    <small>
+                        {{ post.username }} - {{ post.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                    </small>
+                    <div>
+                        <small>いいね数: {{ post.like_count }}</small>
+                        {% if logged_in %}
+                        <form action="{{ url_for('like_post', post_id=post.id) }}" method="POST" style="display: inline;">
+                            <button type="submit" class="like-button {% if post.is_liked %}liked{% endif %}">
+                                {% if post.is_liked %}いいね済み{% else %}いいね{% endif %}
+                            </button>
+                        </form>
+                        {% endif %}
+                        {% if logged_in and post.user_id == session.user_id %}
+                        <form action="{{ url_for('delete_post', post_id=post.id) }}" method="POST" style="display: inline; margin-left: 10px;">
+                            <button type="submit">削除</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <p>まだ投稿はありません。</p>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>

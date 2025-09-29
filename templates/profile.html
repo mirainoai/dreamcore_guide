@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ user.username }}さんのプロフィール</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-bottom: none;
+            background-color: #f0f0f0;
+            margin-right: -1px;
+        }
+        .tab.active {
+            background-color: #fff;
+            border-bottom: 1px solid #fff;
+        }
+        .tab-content {
+            border: 1px solid #ccc;
+            padding: 20px;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}">トップページに戻る</a>
+        <h1>{{ user.username }}さんのプロフィール</h1>
+        <hr>
+
+        <div class="tabs">
+            <div class="tab active" data-tab="threads">作成したスレッド</div>
+            <div class="tab" data-tab="posts">投稿したコメント</div>
+        </div>
+
+        <div id="threads-content" class="tab-content">
+            <h2>作成したスレッド</h2>
+            {% if my_threads %}
+            <ul>
+                {% for thread in my_threads %}
+                <li>
+                    <a href="{{ url_for('game_thread', game_id=thread.id) }}">{{ thread.title }}</a>
+                    <br>
+                    <small>作成日: {{ thread.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p>まだスレッドを作成していません。</p>
+            {% endif %}
+        </div>
+
+        <div id="posts-content" class="tab-content hidden">
+            <h2>投稿したコメント</h2>
+            {% if my_posts %}
+            <ul>
+                {% for post in my_posts %}
+                <li>
+                    <p>
+                        **{{ post.content }}**
+                        <small>
+                            - スレッド: <a href="{{ url_for('game_thread', game_id=post.game_id) }}">{{ post.game_title }}</a>
+                            - 投稿日: {{ post.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                        </small>
+                    </p>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p>まだコメントを投稿していません。</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const tabs = document.querySelectorAll('.tab');
+            const contents = document.querySelectorAll('.tab-content');
+
+            tabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const tabId = tab.dataset.tab;
+
+                    tabs.forEach(item => item.classList.remove('active'));
+                    tab.classList.add('active');
+
+                    contents.forEach(content => content.classList.add('hidden'));
+                    document.getElementById(tabId + '-content').classList.remove('hidden');
+                });
+            });
+        });
+    </script>
+</body>
+</html>
