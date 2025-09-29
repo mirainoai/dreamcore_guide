@@ -1,16 +1,13 @@
 import os
 import psycopg2
 from psycopg2 import extras
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session as SQLAlchemySession
 
 # ------------------------------
 # 1. データベース接続情報 (Render/環境変数)
 # ------------------------------
 
 def get_db_url():
-    """環境変数からPostgreSQLの接続URLを取得する"""
-    # Renderは 'EXTERNAL_DATABASE_URL' または 'DATABASE_URL' を提供
+    """環境変数からPostgreSQLの接続URLを取得する (SQLAlchemy形式に変換)"""
     db_url = os.environ.get('DATABASE_URL')
     if db_url is None:
         raise ValueError("DATABASE_URL environment variable is not set.")
@@ -20,15 +17,10 @@ def get_db_url():
         return db_url.replace("postgres://", "postgresql://", 1)
     return db_url
 
-def get_engine():
-    """SQLAlchemyエンジンを取得する (Flask-Session用)"""
-    return create_engine(get_db_url())
-
 def get_db_connection():
     """psycopg2接続オブジェクトを取得する (直接DB操作用)"""
     # DB URLを直接psycopg2に渡す
     conn = psycopg2.connect(get_db_url(), cursor_factory=extras.DictCursor)
-    # Autocommitは無効に設定し、明示的にcommit/rollbackする
     conn.autocommit = False 
     return conn
 
@@ -82,8 +74,7 @@ def create_likes_table(cur):
     
 def create_session_table(cur):
     """Flask-Sessionが使用するsessionsテーブルを作成"""
-    # Flask-Session (SQLAlchemy backend) は自動でテーブルを作成するが、
-    # 互換性のため、手動で作成できるロジックを残す
+    # Flask-Session (SQLAlchemy backend) が使用するスキーマに合わせる
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
         id VARCHAR(256) PRIMARY KEY,
@@ -95,12 +86,11 @@ def create_session_table(cur):
 def create_tables(conn):
     """全てのテーブルを作成するメイン関数"""
     with conn.cursor() as cur:
-        # データベース操作
         create_users_table(cur)
         create_games_table(cur)
         create_posts_table(cur)
         create_likes_table(cur)
-        create_session_table(cur) # セッションテーブルを最後に作成
+        create_session_table(cur) 
     
     conn.commit()
     print("Database tables created successfully! (users, games, posts, likes, sessions)")

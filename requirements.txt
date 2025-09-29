@@ -6,4 +6,4 @@ gunicorn
 psycopg2-binary
 SQLAlchemy
 Flask-Session
-flask_sqlalchemy  # 💡 この行を追加
+flask_sqlalchemy  # 👈 これが必須
