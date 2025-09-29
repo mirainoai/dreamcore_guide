@@ -1,24 +1,35 @@
 import os
 import secrets
-import hashlib
 import functools
 import time
 from flask import Flask, render_template, request, redirect, url_for, session, g
 from werkzeug.utils import secure_filename
-from db_config import get_db_connection, create_tables # db_configから関数をインポート
+from db_config import get_db_connection, create_tables, get_engine # db_configから関数をインポート
 import psycopg2
-from psycopg2 import sql, extras
+from psycopg2 import extras
+from flask_session import Session # 💡 Flask-Session
+import bcrypt # 💡 bcrypt
+from dotenv import load_dotenv # 💡 python-dotenv
 
 # ------------------------------
-# 1. アプリケーション設定
+# 1. 初期設定とアプリケーション設定
 # ------------------------------
+load_dotenv() # .envファイルから環境変数をロード (ローカル開発用)
 
 app = Flask(__name__)
-# 環境変数からSECRET_KEYを取得。設定されていない場合は安全な乱数を生成。
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(16)) 
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MBまでのファイルを許可
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4'}
+
+# ------------------------------
+# 1.5. Flask-Session設定 💡 (ログイン維持の鍵)
+# ------------------------------
+app.config["SESSION_TYPE"] = "sqlalchemy"
+app.config["SESSION_SQLALCHEMY_TABLE"] = "sessions"
+# SQLAlchemyエンジンはget_engine()で取得
+app.config["SESSION_SQLALCHEMY"] = get_engine() 
+sess = Session(app) # アプリケーションにセッションを設定
 
 # ------------------------------
 # 2. データベース接続管理
@@ -29,11 +40,9 @@ def get_db():
     # gはFlaskのリクエスト固有のストレージ
     if 'db' not in g:
         try:
-            # db_config.pyの関数を使って接続
-            # row_factoryとしてextras.DictCursorを使用し、結果を辞書形式で取得
+            # db_config.pyの関数を使ってpsycopg2接続を取得 (DictCursor設定済み)
             g.db = get_db_connection()
         except Exception as e:
-            # 接続失敗は致命的
             app.logger.error(f"Failed to connect to database: {e}")
             raise RuntimeError("Database connection failed.") from e
     return g.db
@@ -46,21 +55,25 @@ def close_db(e=None):
         db.close()
 
 # ------------------------------
-# 3. ユーティリティ関数
+# 3. ユーティリティ関数 (bcryptに変更)
 # ------------------------------
 
 def hash_password(password):
-    """パスワードをソルト付きでハッシュ化する"""
-    salt = secrets.token_hex(16)
-    hashed = hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
-    return f"{salt}${hashed}"
+    """パスワードをbcryptでハッシュ化する"""
+    # 💡 bcryptの使用
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    # DBに保存するためにバイト列を文字列にデコード
+    return hashed.decode('utf-8') 
 
 def check_password(hashed_password, password):
-    """ハッシュ化されたパスワードと入力されたパスワードを比較する"""
-    if not hashed_password or "$" not in hashed_password:
+    """bcryptハッシュと入力されたパスワードを比較する"""
+    # 💡 bcryptの使用
+    try:
+        # DBからのハッシュをバイト列にエンコードしてから比較
+        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except ValueError:
         return False
-    salt, hashed = hashed_password.split('$', 1)
-    return hashed == hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
 
 def allowed_file(filename):
     """許可された拡張子のファイルかどうかをチェック"""
@@ -71,7 +84,8 @@ def login_required(view):
     """ログインを要求するデコレータ"""
     @functools.wraps(view)
     def wrapped_view(*args, **kwargs):
-        if 'logged_in' not in session or not session['logged_in']:
+        # 💡 Flask-Session導入により、セッションキーの存在を確認するだけでOK
+        if 'user_id' not in session: 
             return redirect(url_for('login'))
         return view(*args, **kwargs)
     return wrapped_view
@@ -84,13 +98,16 @@ def login_required(view):
 if os.environ.get('RUN_MIGRATIONS') == 'True':
     print("--- 💡 Running initial database setup (Migrations)... ---")
     try:
-        create_tables()
+        # DB接続を取得してからテーブル作成
+        conn = get_db_connection()
+        create_tables(conn)
+        conn.close()
         print("--- ✅ Database setup complete! Remember to remove RUN_MIGRATIONS=True from Render! ---")
     except Exception as e:
         print(f"--- ❌ Database setup failed: {e} ---")
 
 # ------------------------------
-# 5. ルーティングとDB操作 (PostgreSQL対応済み)
+# 5. ルーティングとDB操作 (PostgreSQL/Session/Bcrypt対応済み)
 # ------------------------------
 
 @app.route('/')
@@ -111,7 +128,6 @@ def index():
         cursor.execute(sql)
         games = cursor.fetchall()
     except psycopg2.errors.UndefinedTable:
-        # 'games'テーブルがまだ存在しない場合の例外処理
         games = []
         app.logger.warning("Warning: 'games' table does not exist. Returning empty list.")
     except Exception as e:
@@ -119,7 +135,6 @@ def index():
         app.logger.error(f"Error fetching games: {e}")
         games = []
 
-    # テンプレートにデータを渡してレンダリング
     return render_template('index.html', games=games)
 
 # --- ログイン・登録・ログアウト ---
@@ -130,30 +145,25 @@ def login():
         username = request.form['username']
         password = request.form['password']
         db = get_db()
-        # DictCursorを使用
         cursor = db.cursor(cursor_factory=extras.DictCursor) 
         
-        # ユーザー情報を取得
         sql = "SELECT id, password_hash, username FROM users WHERE username = %s;"
         try:
             cursor.execute(sql, (username,))
             user = cursor.fetchone()
         except Exception as e:
             db.rollback()
-            # 💡 テンプレート名を確認
             return render_template('login.html', error=f"データベースエラー: {e}")
 
-        # パスワードチェック
+        # 💡 bcryptでパスワードチェック
         if user and check_password(user['password_hash'], password):
-            session['logged_in'] = True
+            # 💡 Flask-Sessionにユーザー情報を保存
             session['user_id'] = user['id']
             session['username'] = user['username']
             return redirect(url_for('index'))
         else:
-            # 💡 テンプレート名を確認
             return render_template('login.html', error='ユーザー名またはパスワードが違います')
     
-    # 💡 テンプレート名を確認
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -163,35 +173,31 @@ def register():
         password = request.form['password']
         
         if len(username) < 3 or len(password) < 6:
-             # 💡 テンプレート名を確認
              return render_template('login.html', error='ユーザー名は3文字以上、パスワードは6文字以上が必要です', is_register=True)
 
+        # 💡 bcryptでハッシュ化
         hashed_password = hash_password(password)
         db = get_db()
         cursor = db.cursor()
         
-        # ユーザー情報をDBに挿入
         sql = "INSERT INTO users (username, password_hash) VALUES (%s, %s);"
         try:
             cursor.execute(sql, (username, hashed_password))
             db.commit()
             return redirect(url_for('login'))
         except psycopg2.errors.UniqueViolation:
-            # ユーザー名重複エラー
             db.rollback()
-            # 💡 テンプレート名を確認
             return render_template('login.html', error='そのユーザー名は既に使用されています', is_register=True)
         except Exception as e:
             db.rollback()
-            # 💡 テンプレート名を確認
             return render_template('login.html', error=f"データベースエラー: {e}", is_register=True)
             
-    # 💡 テンプレート名を確認
     return render_template('login.html', is_register=True)
 
 @app.route('/logout')
 def logout():
-    session.clear()
+    # 💡 セッションをクリア
+    session.clear() 
     return redirect(url_for('index'))
 
 # --- スレッド作成 ---
@@ -208,14 +214,12 @@ def create_game():
             return render_template('create_game.html', error="タイトルは必須です")
 
         db = get_db()
-        cursor = db.cursor(cursor_factory=extras.DictCursor) # DictCursorを使用
+        cursor = db.cursor(cursor_factory=extras.DictCursor)
         
-        # PostgreSQL対応: RETURNING id で新しいIDを取得
         sql = "INSERT INTO games (title, user_id, game_url) VALUES (%s, %s, %s) RETURNING id;"
         
         try:
             cursor.execute(sql, (title, user_id, game_url))
-            # RETURNINGでIDを取得し、カーソルをクリア
             new_game_id = cursor.fetchone()['id']
             db.commit()
             return redirect(url_for('game_thread', game_id=new_game_id))
@@ -227,16 +231,14 @@ def create_game():
 
 # --- スレッド詳細とコメント投稿 ---
 
-@app.route('/thread/<int:game_id>', methods=['GET', 'POST']) # ルーティングを '/thread/' に修正
+@app.route('/thread/<int:game_id>', methods=['GET', 'POST'])
 def game_thread(game_id):
     db = get_db()
-    # DictCursorを使用
     cursor = db.cursor(cursor_factory=extras.DictCursor) 
     
     # 投稿処理
     if request.method == 'POST':
-        # ログインチェック
-        if 'logged_in' not in session or not session['logged_in']:
+        if 'user_id' not in session:
             return redirect(url_for('login'))
 
         content = request.form.get('content', '').strip()
@@ -252,18 +254,14 @@ def game_thread(game_id):
             media_file.save(filepath)
             
         if not content and not media_filename:
-            # 内容もファイルもない場合はリダイレクト
             return redirect(url_for('game_thread', game_id=game_id)) 
 
-        # 2. データベース挿入
+        # 2. データベース挿入 (PostgreSQL RETURNING修正済み)
         try:
-            # 🚨 PostgreSQL対応: RETURNING id で新しいIDを取得
             sql = "INSERT INTO posts (game_id, user_id, content, media_url) VALUES (%s, %s, %s, %s) RETURNING id;"
             cursor.execute(sql, (game_id, user_id, content, media_filename))
-            
-            # 🚨 Internal Server Error解消の鍵: RETURNINGを使用したら、必ずfetchone()でカーソルをクリアする
+            # RETURNINGでIDを取得したら、必ずfetchone()でカーソルをクリアする
             cursor.fetchone() 
-            
             db.commit()
             return redirect(url_for('game_thread', game_id=game_id))
         
@@ -288,12 +286,11 @@ def game_thread(game_id):
     if not game:
         return "ゲームスレッドが見つかりません", 404
 
-    # 2. コメント投稿を取得（ユーザー名と結合）
+    # 2. コメント投稿を取得（いいね状態も取得）
     posts_sql = """
     SELECT 
         p.id, p.content, p.media_url, p.created_at, u.username, 
         COUNT(l.id) AS like_count,
-        -- is_likedではなく、user_likedという名前でいいね状態を直接取得
         EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = %s) AS user_liked
     FROM posts p 
     JOIN users u ON p.user_id = u.id
@@ -303,12 +300,10 @@ def game_thread(game_id):
     ORDER BY p.created_at ASC;
     """
     
+    # ログインユーザーID、未ログイン時は-1
     current_user_id = session.get('user_id', -1) 
     cursor.execute(posts_sql, (current_user_id, game_id))
     posts = cursor.fetchall()
-
-    # 🚨 前回エラーの原因となった、posts内の要素を操作する処理はここには含まれていません。
-    # なぜなら、SQLで user_liked を取得済みだからです。
     
     # テンプレートをレンダリング
     return render_template('game_thread.html', game=game, posts=posts, user_id=current_user_id)
@@ -333,11 +328,9 @@ def like_post(post_id):
             delete_sql = "DELETE FROM likes WHERE post_id = %s AND user_id = %s;"
             cursor.execute(delete_sql, (post_id, user_id))
         else:
-            # 未「いいね」なら、挿入
-            # PostgreSQL対応: RETURNING id を使用
+            # 未「いいね」なら、挿入 (PostgreSQL RETURNING修正済み)
             insert_sql = "INSERT INTO likes (post_id, user_id) VALUES (%s, %s) RETURNING id;"
             cursor.execute(insert_sql, (post_id, user_id))
-            # カーソルをクリア
             cursor.fetchone() 
         
         db.commit()
@@ -345,6 +338,7 @@ def like_post(post_id):
     except Exception as e:
         db.rollback()
         app.logger.error(f"Like/Unlike Error: {e}")
+        # リダイレクトは元のページに戻す
         return redirect(request.referrer or url_for('index'))
 
     # 元のページに戻る
@@ -357,7 +351,7 @@ def like_post(post_id):
 def delete_thread(game_id):
     user_id = session['user_id']
     db = get_db()
-    cursor = db.cursor()
+    cursor = db.cursor(cursor_factory=extras.DictCursor)
     
     try:
         # スレッド作成者であるかを確認
@@ -383,6 +377,8 @@ def delete_thread(game_id):
 
 
 if __name__ == '__main__':
+    # 💡 ローカルで .env が使えるように設定
     if not os.path.exists('static/uploads'):
         os.makedirs('static/uploads')
+    # ⚠️ Renderデプロイ時は gunicorn が実行するため、ここは実行されません
     app.run(debug=True)

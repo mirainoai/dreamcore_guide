@@ -5,3 +5,4 @@ thefuzz
 gunicorn
 psycopg2-binary
 SQLAlchemy
+Flask-Session
