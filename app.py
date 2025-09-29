@@ -4,17 +4,18 @@ import functools
 import time
 from flask import Flask, render_template, request, redirect, url_for, session, g
 from werkzeug.utils import secure_filename
+# db_configから必要な関数をインポート
 from db_config import get_db_connection, create_tables, get_db_url 
 import psycopg2
 from psycopg2 import extras
-from flask_session import Session
-import bcrypt
-from dotenv import load_dotenv
+from flask_session import Session # セッション永続化
+import bcrypt # パスワードハッシュ化
+from dotenv import load_dotenv # 環境変数ロード
 
 # ------------------------------
 # 1. 初期設定とアプリケーション設定
 # ------------------------------
-load_dotenv() 
+load_dotenv() # .envファイルから環境変数をロード (ローカル開発用)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(16)) 
@@ -22,21 +23,24 @@ app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4'}
 
+# 💡 データベースURIを標準のFlask-SQLAlchemyキーとして設定 💡
 try:
+    # db_configから取得したURLをFlaskの設定に登録
     app.config["SQLALCHEMY_DATABASE_URI"] = get_db_url()
 except ValueError:
     print("Warning: DATABASE_URL not found. Using local fallback.")
-    app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://user:password@localhost/defaultdb" 
+    app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://user:password@localhost/defaultdb"
 
 # ------------------------------
 # 1.5. Flask-Session設定 (セッション永続化の鍵)
 # ------------------------------
+# Flask-Sessionがflask_sqlalchemyを使ってセッションをDBに保存するように設定
 app.config["SESSION_TYPE"] = "sqlalchemy"
 app.config["SESSION_SQLALCHEMY_TABLE"] = "sessions"
 app.config["SESSION_PERMANENT"] = True
 app.config["SESSION_USE_SIGNER"] = True 
 
-# 💡 Render/HTTPS環境に対応したクッキー設定を追加 💡
+# 💡 Render/HTTPS環境に対応したクッキー設定（セッション維持の鍵） 💡
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PREFERRED_URL_SCHEME'] = 'https' 
@@ -139,9 +143,7 @@ def index():
 
     return render_template('index.html', games=games)
 
-# --- ログイン・登録・ログアウト ---
-
-# ... (他の部分は変更なし)
+# --- ログイン・ログアウト ---
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -159,27 +161,53 @@ def login():
             db.rollback()
             return render_template('login.html', error=f"データベースエラー: {e}")
 
-        # 1. ユーザーが存在するかチェック
-        if not user:
-             # ユーザーが見つからない場合
-             return render_template('login.html', error='ユーザー名が見つかりません')
-
-        # 2. パスワードをbcryptでチェック
-        # if user and check_password(user['password_hash'], password): # 🚨 元の行
-        if check_password(user['password_hash'], password):
-            # ログイン成功
+        if user and check_password(user['password_hash'], password):
             session['user_id'] = user['id']
             session['username'] = user['username']
             return redirect(url_for('index')) 
         else:
-            # パスワードが一致しない場合
-            # 🚨 警告: 実際の本番環境ではこのエラーはユーザーに表示すべきではありません
-            print(f"DEBUG: Password check failed for user {username}.")
-            return render_template('login.html', error='パスワードが違います')
+            return render_template('login.html', error='ユーザー名またはパスワードが違います')
     
     return render_template('login.html')
 
-# ... (他の部分は変更なし)
+# --- 登録処理 ---
+# 🚨 BuildError: Could not build url for endpoint 'register' 対策のため、
+#    このルートが存在することを保証します。
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        if len(username) < 3 or len(password) < 6:
+             return render_template('login.html', error='ユーザー名は3文字以上、パスワードは6文字以上が必要です', is_register=True)
+
+        hashed_password = hash_password(password)
+        db = get_db()
+        cursor = db.cursor()
+        
+        sql = "INSERT INTO users (username, password_hash) VALUES (%s, %s);"
+        try:
+            cursor.execute(sql, (username, hashed_password))
+            db.commit()
+            # 登録成功後はログイン画面へリダイレクト
+            return redirect(url_for('login')) 
+        except psycopg2.errors.UniqueViolation:
+            db.rollback()
+            return render_template('login.html', error='そのユーザー名は既に使用されています', is_register=True)
+        except Exception as e:
+            db.rollback()
+            return render_template('login.html', error=f"データベースエラー: {e}", is_register=True)
+            
+    # GETリクエストの場合
+    return render_template('login.html', is_register=True)
+
+@app.route('/logout')
+def logout():
+    session.clear() 
+    return redirect(url_for('index'))
+
 # --- スレッド作成 ---
 
 @app.route('/create_game', methods=['GET', 'POST'])
@@ -312,7 +340,7 @@ def like_post(post_id):
     return redirect(request.referrer or url_for('index'))
 
 
-# --- スレッド削除 (仮に実装) ---
+# --- スレッド削除 ---
 @app.route('/delete_thread/<int:game_id>', methods=['POST'])
 @login_required
 def delete_thread(game_id):
