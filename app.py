@@ -4,18 +4,17 @@ import functools
 import time
 from flask import Flask, render_template, request, redirect, url_for, session, g
 from werkzeug.utils import secure_filename
-# db_configから必要な関数をインポート
 from db_config import get_db_connection, create_tables, get_db_url 
 import psycopg2
 from psycopg2 import extras
-from flask_session import Session # セッション永続化
-import bcrypt # パスワードハッシュ化
-from dotenv import load_dotenv # 環境変数ロード
+from flask_session import Session
+import bcrypt
+from dotenv import load_dotenv
 
 # ------------------------------
 # 1. 初期設定とアプリケーション設定
 # ------------------------------
-load_dotenv() # .envファイルから環境変数をロード (ローカル開発用)
+load_dotenv() 
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(16)) 
@@ -23,24 +22,25 @@ app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4'}
 
-# 💡 データベースURIを標準のFlask-SQLAlchemyキーとして設定 💡
 try:
-    # db_configから取得したURLをFlaskの設定に登録
     app.config["SQLALCHEMY_DATABASE_URI"] = get_db_url()
 except ValueError:
     print("Warning: DATABASE_URL not found. Using local fallback.")
-    # Renderではこのパスは使われませんが、ローカルデバッグ用に設定
-    app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://user:password@localhost/defaultdb"
+    app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://user:password@localhost/defaultdb" 
 
 # ------------------------------
 # 1.5. Flask-Session設定 (セッション永続化の鍵)
 # ------------------------------
-# Flask-Sessionがflask_sqlalchemyを使ってセッションをDBに保存するように設定
 app.config["SESSION_TYPE"] = "sqlalchemy"
 app.config["SESSION_SQLALCHEMY_TABLE"] = "sessions"
-# SESSION_SQLALCHEMY_TABLEが自動的に app.config["SQLALCHEMY_DATABASE_URI"] を参照します
 app.config["SESSION_PERMANENT"] = True
-app.config["SESSION_USE_SIGNER"] = True # セッションデータの暗号化
+app.config["SESSION_USE_SIGNER"] = True 
+
+# 💡 Render/HTTPS環境に対応したクッキー設定を追加 💡
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PREFERRED_URL_SCHEME'] = 'https' 
+
 sess = Session(app) 
 
 # ------------------------------
@@ -51,7 +51,6 @@ def get_db():
     """リクエストごとにデータベース接続を取得・管理する"""
     if 'db' not in g:
         try:
-            # db_config.pyの関数を使ってpsycopg2接続を取得 (DictCursor設定済み)
             g.db = get_db_connection()
         except Exception as e:
             app.logger.error(f"Failed to connect to database: {e}")
@@ -100,7 +99,6 @@ def login_required(view):
 # 4. データベースマイグレーション
 # ------------------------------
 
-# Renderでの初回デプロイ時のみテーブルを作成するための処理
 if os.environ.get('RUN_MIGRATIONS') == 'True':
     print("--- 💡 Running initial database setup (Migrations)... ---")
     try:
@@ -159,12 +157,9 @@ def login():
             db.rollback()
             return render_template('login.html', error=f"データベースエラー: {e}")
 
-        # bcryptでパスワードチェック
         if user and check_password(user['password_hash'], password):
-            # セッションにユーザー情報を保存
             session['user_id'] = user['id']
             session['username'] = user['username']
-            # login_requiredデコレータが user_id の存在を確認するため、logged_inは不要
             return redirect(url_for('index')) 
         else:
             return render_template('login.html', error='ユーザー名またはパスワードが違います')
