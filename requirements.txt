@@ -1,9 +1,7 @@
 Flask
-bcrypt
 python-dotenv
-thefuzz
-gunicorn
 psycopg2-binary
-SQLAlchemy
 Flask-Session
-flask_sqlalchemy  # 👈 これが必須
+bcrypt
+Flask-SQLAlchemy 
+

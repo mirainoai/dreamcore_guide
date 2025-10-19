@@ -8,17 +8,15 @@ load_dotenv()
 def get_db_url():
     """
     環境変数からPostgreSQLの接続URLを取得し、SQLAlchemy形式（postgresql://）に変換する。
-    RenderのDATABASE_URLは通常 'postgres://' で始まるため、これを修正する。
     """
     db_url = os.environ.get('DATABASE_URL')
     
     if db_url is None:
-        # ローカルでのデバッグ用フォールバック
         db_url = os.environ.get('DATABASE_URL_LOCAL')
         if db_url is None:
             raise ValueError("DATABASE_URL environment variable is not set.")
     
-    # psycopg2形式 (postgres://) を SQLAlchemy形式 (postgresql://) に変換
+    # Renderのpsycopg2形式 (postgres://) を SQLAlchemy形式 (postgresql://) に変換
     if db_url.startswith("postgres://"):
         return db_url.replace("postgres://", "postgresql://", 1)
         
@@ -28,15 +26,14 @@ def get_db_connection():
     """
     psycopg2でデータベースに接続する。
     """
-    db_url = os.environ.get('DATABASE_URL')
-    if db_url is None:
-        # ローカルでのデバッグ用フォールバック
-        db_url = os.environ.get('DATABASE_URL_LOCAL')
-        if db_url is None:
+    db_url_raw = os.environ.get('DATABASE_URL')
+    if db_url_raw is None:
+        db_url_raw = os.environ.get('DATABASE_URL_LOCAL')
+        if db_url_raw is None:
             raise ValueError("DATABASE_URL environment variable is not set.")
             
     # Render環境に合わせてSSLモードを設定
-    conn = psycopg2.connect(db_url, sslmode='require' if 'render.com' in db_url else 'disable')
+    conn = psycopg2.connect(db_url_raw, sslmode='require' if 'render.com' in db_url_raw else 'disable')
     return conn
 
 def create_tables(conn):
@@ -45,8 +42,7 @@ def create_tables(conn):
     """
     cursor = conn.cursor()
     
-    # sessionsテーブルはFlask-Sessionが自動的に作成するが、念のため他のテーブルを作成
-    # usersテーブル: ユーザー情報
+    # usersテーブル
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -56,18 +52,18 @@ def create_tables(conn):
         );
     """)
     
-    # gamesテーブル: スレッド/ゲーム投稿本体
+    # gamesテーブル: カラム名を game_url に統一
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS games (
             id SERIAL PRIMARY KEY,
             title VARCHAR(255) NOT NULL,
             user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-            game_url TEXT,
+            game_url TEXT, -- <<<<<<<<<<<<<<<< 修正: url -> game_url
             created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
     """)
     
-    # postsテーブル: コメント/レス
+    # postsテーブル
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id SERIAL PRIMARY KEY,
@@ -79,7 +75,7 @@ def create_tables(conn):
         );
     """)
 
-    # likesテーブル: いいね
+    # likesテーブル
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS likes (
             id SERIAL PRIMARY KEY,
@@ -89,7 +85,7 @@ def create_tables(conn):
         );
     """)
 
-    # Flask-Sessionが使用するsessionsテーブルも作成（なくても自動で作られるはずですが、コードが実行されることを保証）
+    # sessionsテーブル (Flask-Session用)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id VARCHAR(256) PRIMARY KEY,
