@@ -8,13 +8,16 @@ from datetime import datetime
 # アプリ初期化
 app = Flask(__name__)
 load_dotenv()  # .envから環境変数を読み込み
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_fallback_key")  # 必須: セッション用
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_fallback_key")  # セッション用
 app.config["SESSION_COOKIE_DOMAIN"] = os.environ.get("SESSION_COOKIE_DOMAIN", "localhost")
+
+# 環境変数からDBパス取得
+DATABASE_PATH = os.environ.get("DATABASE_PATH", "dreamcore_guide.db")
 
 # データベース接続
 def get_db():
     if 'db' not in g:
-        g.db = sqlite3.connect("dreamcore_guide.db", check_same_thread=False)
+        g.db = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
         g.db.row_factory = sqlite3.Row  # 辞書形式
     return g.db
 
@@ -44,12 +47,14 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
-    # 初期ゲームデータ（オプション）
+    # 初期データ（オプション）
     db.execute("""
         INSERT OR IGNORE INTO posts (user_id, title, content, game_url, game_title)
         VALUES (?, ?, ?, ?, ?)
     """, (1, "初期投稿", "これはテスト投稿です。", "https://example.com", "テストゲーム"))
     db.commit()
+    print("--- 💡 Running initial database setup (Migrations)... ---")
+    print("--- ✅ Database setup complete! ---")
 
 app.teardown_appcontext(close_db)
 
@@ -149,7 +154,12 @@ def logout():
     flash("ログアウトしました。", "success")
     return redirect(url_for("index"))
 
-# 初期化
+# デプロイ時初期化
+if os.environ.get("RUN_MIGRATIONS", "False").lower() == "true":
+    with app.app_context():
+        init_db()
+
+# ローカル実行
 if __name__ == "__main__":
     with app.app_context():
         init_db()
