@@ -4,7 +4,7 @@ import functools
 import time
 import psycopg2
 from psycopg2 import extras
-from flask import Flask, render_template, request, redirect, url_for, session, g
+from flask import Flask, render_template, request, redirect, url_for, session, g, flash
 from werkzeug.utils import secure_filename
 from flask_session import Session # セッション永続化
 import bcrypt # パスワードハッシュ化
@@ -50,10 +50,16 @@ app.config["SESSION_USE_SIGNER"] = True
 # 🚨 警告解消のため、SQLAlchemyインスタンスをFlask-Sessionに渡す
 app.config["SESSION_SQLALCHEMY"] = db_session 
 
-# Render/HTTPS環境に対応したクッキー設定
+# Render/HTTPS環境に対応したクッキー設定の強化
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PREFERRED_URL_SCHEME'] = 'https' 
+
+# 🚨 最終対策: Renderのドメイン名を明示的に指定
+# RenderのプライマリURL（例: dreamcore-guide.onrender.com）を設定
+APP_DOMAIN = os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost') 
+if APP_DOMAIN != 'localhost':
+    app.config['SESSION_COOKIE_DOMAIN'] = APP_DOMAIN
 
 # Flask-Sessionの初期化
 sess = Session(app) 
@@ -106,6 +112,8 @@ def login_required(view):
     @functools.wraps(view)
     def wrapped_view(*args, **kwargs):
         if 'user_id' not in session: 
+            # ログインしていない場合はエラーメッセージをflash
+            flash('ログインが必要です。', 'error')
             return redirect(url_for('login'))
         return view(*args, **kwargs)
     return wrapped_view
@@ -133,7 +141,8 @@ def index():
     db = get_db()
     cursor = db.cursor(cursor_factory=extras.DictCursor)
     
-    # 🚨 修正: g.url -> g.game_url に変更
+    # 既存のクエリを修正: g.game_url が正しいカラム名であることを確認し、別名（AS）指定を削除する
+    # エラーログ "column g.url does not exist" に対応
     sql = """
     SELECT 
         g.id, g.title, g.game_url, g.created_at, u.username 
@@ -155,7 +164,7 @@ def index():
 
     return render_template('index.html', games=games)
 
-# --- ログイン・登録・ログアウト (変更なし) ---
+# --- ログイン・登録・ログアウト ---
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -176,6 +185,8 @@ def login():
         if user and check_password(user['password_hash'], password):
             session['user_id'] = user['id']
             session['username'] = user['username']
+            # ログイン成功時にflashメッセージを表示
+            flash('ログインに成功しました！', 'success')
             return redirect(url_for('index')) 
         else:
             return render_template('login.html', error='ユーザー名またはパスワードが違います')
@@ -199,6 +210,8 @@ def register():
         try:
             cursor.execute(sql, (username, hashed_password))
             db.commit()
+            # 登録成功時にflashメッセージを表示
+            flash('ユーザー登録に成功しました。ログインしてください。', 'success')
             return redirect(url_for('login')) 
         except psycopg2.errors.UniqueViolation:
             db.rollback()
@@ -212,6 +225,8 @@ def register():
 @app.route('/logout')
 def logout():
     session.clear() 
+    # ログアウト時にflashメッセージを表示
+    flash('ログアウトしました。', 'info')
     return redirect(url_for('index'))
 
 # --- スレッド作成 ---
@@ -230,13 +245,14 @@ def create_game():
         db = get_db()
         cursor = db.cursor(cursor_factory=extras.DictCursor)
         
-        # 🚨 修正: url -> game_url に変更
+        # game_url を使用
         sql = "INSERT INTO games (title, user_id, game_url) VALUES (%s, %s, %s) RETURNING id;"
         
         try:
             cursor.execute(sql, (title, user_id, game_url))
             new_game_id = cursor.fetchone()['id']
             db.commit()
+            flash('新しいスレッドを作成しました！', 'success')
             return redirect(url_for('game_thread', game_id=new_game_id))
         except Exception as e:
             db.rollback()
@@ -253,6 +269,7 @@ def game_thread(game_id):
     
     if request.method == 'POST':
         if 'user_id' not in session:
+            # flash('コメント投稿にはログインが必要です。', 'error')
             return redirect(url_for('login'))
 
         content = request.form.get('content', '').strip()
@@ -274,12 +291,14 @@ def game_thread(game_id):
             cursor.execute(sql, (game_id, user_id, content, media_filename))
             cursor.fetchone() 
             db.commit()
+            flash('コメントを投稿しました。', 'success')
             return redirect(url_for('game_thread', game_id=game_id))
         
         except Exception as e:
             db.rollback()
             app.logger.error(f"Post error on game {game_id}: {e}")
-            return f"コメント投稿時のデータベースエラーが発生しました: {e}"
+            flash(f"コメント投稿時のデータベースエラーが発生しました: {e}", 'error')
+            return redirect(url_for('game_thread', game_id=game_id))
 
     # GET リクエスト (スレッド表示)
     
@@ -315,7 +334,7 @@ def game_thread(game_id):
     
     return render_template('game_thread.html', game=game, posts=posts, user_id=current_user_id)
 
-# --- いいね処理・スレッド削除 (変更なし) ---
+# --- いいね処理・スレッド削除 ---
 
 @app.route('/like/<int:post_id>', methods=['POST'])
 @login_required
@@ -332,16 +351,19 @@ def like_post(post_id):
         if existing_like:
             delete_sql = "DELETE FROM likes WHERE post_id = %s AND user_id = %s;"
             cursor.execute(delete_sql, (post_id, user_id))
+            flash('いいねを取り消しました。', 'info')
         else:
             insert_sql = "INSERT INTO likes (post_id, user_id) VALUES (%s, %s) RETURNING id;"
             cursor.execute(insert_sql, (post_id, user_id))
             cursor.fetchone() 
+            flash('いいねしました！', 'success')
         
         db.commit()
 
     except Exception as e:
         db.rollback()
         app.logger.error(f"Like/Unlike Error: {e}")
+        flash('いいね処理中にエラーが発生しました。', 'error')
         return redirect(request.referrer or url_for('index'))
 
     return redirect(request.referrer or url_for('index'))
@@ -362,13 +384,55 @@ def delete_thread(game_id):
             cursor.execute("DELETE FROM posts WHERE game_id = %s;", (game_id,))
             cursor.execute("DELETE FROM games WHERE id = %s;", (game_id,))
             db.commit()
+            flash('スレッドを削除しました。', 'success')
         else:
-            pass 
+            flash('スレッドを削除する権限がありません。', 'error')
     except Exception as e:
         db.rollback()
         app.logger.error(f"Error deleting thread {game_id}: {e}")
+        flash(f"スレッド削除中にエラーが発生しました: {e}", 'error')
     
     return redirect(url_for('index'))
+
+# --- 🚨 デバッグ用: 全データ削除機能 🚨 ---
+@app.route('/debug/reset_data', methods=['GET', 'POST'])
+def reset_data():
+    if request.method == 'POST':
+        db = get_db()
+        cursor = db.cursor()
+        
+        try:
+            # 外部キー制約のあるテーブルから順に削除 (CASCADEを使うため、順番は必須ではないが一応)
+            cursor.execute("DELETE FROM sessions;")
+            cursor.execute("DELETE FROM likes;")
+            cursor.execute("DELETE FROM posts;")
+            cursor.execute("DELETE FROM games;")
+            cursor.execute("DELETE FROM users;")
+            db.commit()
+            
+            # セッションもクリア
+            session.clear()
+            
+            # メッセージと共にトップページへリダイレクト
+            flash('🚨 すべてのユーザー、投稿、ゲーム、セッションデータがデータベースから削除されました。', 'success')
+            return redirect(url_for('index'))
+        
+        except Exception as e:
+            db.rollback()
+            app.logger.error(f"Error resetting database: {e}")
+            flash(f"🚨 データベースリセット中にエラーが発生しました: {e}", 'error')
+            return redirect(url_for('index'))
+
+    return """
+    <form method="post">
+        <h1>🚨 警告: 全データ削除 🚨</h1>
+        <p>この操作はデータベースの全てのユーザー、投稿、ゲームデータを完全に削除し、元に戻せません。</p>
+        <p>続行しますか？</p>
+        <button type="submit" style="padding: 10px; background-color: red; color: white; border: none; cursor: pointer;">はい、全て削除します</button>
+        <a href="/" style="margin-left: 20px;">キャンセル</a>
+    </form>
+    """
+
 
 if __name__ == '__main__':
     if not os.path.exists('static/uploads'):
