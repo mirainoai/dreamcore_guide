@@ -19,7 +19,7 @@
         {% endwith %}
         
         {% if session.user_id %}
-            <p>ログイン中 | <a href="{{ url_for('create') }}">新投稿</a> | <a href="{{ url_for('logout') }}">ログアウト</a></p>
+            <p>ログイン中 | <a href="{{ url_for('create_post') }}">新投稿</a> | <a href="{{ url_for('logout') }}">ログアウト</a></p>
         {% else %}
             <p><a href="{{ url_for('login') }}">ログイン</a> | <a href="{{ url_for('register') }}">登録</a></p>
         {% endif %}
@@ -37,7 +37,7 @@
                 </div>
             {% endfor %}
         {% else %}
-            <p>投稿なし。 <a href="{{ url_for('create') }}">作成</a></p>
+            <p>投稿なし。 <a href="{{ url_for('create_post') }}">作成</a></p>
         {% endif %}
     </div>
 </body>
