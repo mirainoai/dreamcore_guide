@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新しいガイド投稿 - DreamCore Guide</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">DreamCore Guide</h1>
+        <h2>新しいガイド投稿</h2>
+        
+        <!-- フラッシュメッセージ表示（エラー/成功） -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="POST" action="{{ url_for('create_post') }}">
+            <div class="form-group">
+                <label for="game_id">ゲームを選択（任意）:</label>
+                <select id="game_id" name="game_id" class="form-control">
+                    <option value="">ゲームなし</option>
+                    {% for game in games %}
+                        <option value="{{ game.id }}">{{ game.title }}</option>
+                    {% endfor %}
+                </select>
+                <small class="form-text">ゲームを選択すると、投稿がそのガイドに紐づきます。</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="title">タイトル:</label>
+                <input type="text" id="title" name="title" class="form-control" placeholder="例: Echoes of the Void クリアガイド" required maxlength="100">
+            </div>
+            
+            <div class="form-group">
+                <label for="content">内容:</label>
+                <textarea id="content" name="content" class="form-control" rows="10" placeholder="ガイドの内容を詳しく書いてください。" required></textarea>
+                <small class="form-text">MarkdownやHTMLも使えますが、基本テキストでOK。</small>
+            </div>
+            
+            <button type="submit" class="btn btn-primary">投稿する</button>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary">キャンセル</a>
+        </form>
+        
+        <p class="mt-3">
+            <a href="{{ url_for('index') }}">ホームに戻る</a> | 
+            <a href="{{ url_for('logout') }}">ログアウト</a>
+        </p>
+    </div>
+</body>
+</html>

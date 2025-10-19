@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ game.title }} - DreamCore Guide</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>{{ game.title }}</h1>
+        <p>ジャンル: {{ game.genre }} | 開発: {{ game.developer }}</p>
+        <a href="{{ url_for('index') }}">戻る</a>
+        
+        <h2>関連投稿</h2>
+        {% for post in posts %}
+            <div class="post">
+                <h3>{{ post.title }}</h3>
+                <p>{{ post.content }}</p>
+                <p>by {{ post.username }} – {{ post.created_at_fmt }}</p>
+            </div>
+        {% endfor %}
+        {% if not posts %}
+            <p>投稿なし。</p>
+        {% endif %}
+    </div>
+</body>
+</html>

@@ -2,115 +2,43 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Dreamcore 攻略サイト</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DreamCore Guide</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <style>
-        .auth-container {
-            display: flex;
-            justify-content: space-between;
-        }
-        .auth-container form {
-            flex: 1;
-            margin: 0 10px;
-        }
-        .search-container {
-            margin-bottom: 20px;
-        }
-        .game-thread-item {
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin-bottom: 10px;
-            background-color: #f9f9f9;
-        }
-        .sort-options a.active {
-            font-weight: bold;
-            color: black;
-            text-decoration: none;
-        }
-        .error-message {
-            color: red;
-            font-size: 0.9em;
-            margin-top: 5px;
-        }
-    </style>
 </head>
 <body>
     <div class="container">
-        <h1>Dreamcore 攻略サイト</h1>
-
-        {% if logged_in %}
-        <div>
-            <h2>新しいスレッドを作成</h2>
-            <form action="{{ url_for('create_thread') }}" method="POST">
-                <input type="text" name="game_title" placeholder="ゲームのタイトルを入力" required>
-                <br>
-                <input type="url" name="game_url" placeholder="ゲームリンク (任意)">
-                <button type="submit">作成</button>
-            </form>
-            <p><a href="{{ url_for('profile') }}">プロフィール</a></p>
-            <a href="{{ url_for('logout') }}">ログアウト</a>
-        </div>
+        <h1>DreamCore Guide</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <p style="color: {{ 'green' if category == 'success' else 'red' }};">{{ message }}</p>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        {% if session.user_id %}
+            <p>ログイン中 | <a href="{{ url_for('create') }}">新投稿</a> | <a href="{{ url_for('logout') }}">ログアウト</a></p>
         {% else %}
-        <div class="auth-container">
-            <div>
-                <h2>アカウントを作成</h2>
-                <form action="{{ url_for('register') }}" method="POST">
-                    <input type="text" name="username" placeholder="ユーザー名" required>
-                    {% if error_register %}<p class="error-message">{{ error_register }}</p>{% endif %}
-                    <input type="password" name="password" placeholder="パスワード" required>
-                    <button type="submit">登録</button>
-                </form>
-            </div>
-            <div>
-                <h2>ログイン</h2>
-                <form action="{{ url_for('login') }}" method="POST">
-                    <input type="text" name="username" placeholder="ユーザー名" required>
-                    <input type="password" name="password" placeholder="パスワード" required>
-                    {% if error_login %}<p class="error-message">{{ error_login }}</p>{% endif %}
-                    <button type="submit">ログイン</button>
-                </form>
-            </div>
-        </div>
+            <p><a href="{{ url_for('login') }}">ログイン</a> | <a href="{{ url_for('register') }}">登録</a></p>
         {% endif %}
-
-        <hr>
-
-        <div class="search-container">
-            <form action="{{ url_for('index') }}" method="GET">
-                <input type="text" name="search" placeholder="スレッドを検索" value="{{ search_query }}">
-                <button type="submit">検索</button>
-            </form>
-        </div>
-
-        <div class="sort-options">
-            並び替え:
-            <a href="{{ url_for('index', sort='new') }}" class="{{ 'active' if sort_by == 'new' }}">新着順</a>
-            |
-            <a href="{{ url_for('index', sort='comments') }}" class="{{ 'active' if sort_by == 'comments' }}">コメント数順</a>
-        </div>
-
-        <h2>ゲームタイトル一覧</h2>
-        <ul>
-            {% for game in games %}
-            <li>
-                <div class="game-thread-item">
-                    <a href="{{ url_for('game_thread', game_id=game.id) }}">
-                        <h3>{{ game.title }}</h3>
-                    </a>
-                    {% if game.game_url %}
-                    <small><a href="{{ game.game_url }}" target="_blank">{{ game.game_url }}</a></small>
-                    {% endif %}
-                    {% if logged_in and game.user_id == session.user_id %}
-                    <form action="{{ url_for('delete_thread', game_id=game.id) }}" method="POST" style="display: inline; margin-left: 10px;">
-                        <button type="submit">削除</button>
-                    </form>
+        
+        <h2>最新投稿</h2>
+        {% if posts %}
+            {% for post in posts %}
+                <div class="post">
+                    <h3>{{ post.title }}</h3>
+                    <p>{{ post.content[:100] }}...</p>
+                    <p>by {{ post.username }} – {{ post.created_at_fmt }}</p>
+                    {% if post.game_url %}
+                        <p>ゲーム: <a href="{{ post.game_url }}">{{ post.game_title }}</a></p>
                     {% endif %}
                 </div>
-            </li>
-            {% else %}
-            <p>まだゲームスレッドはありません。</p>
             {% endfor %}
-        </ul>
+        {% else %}
+            <p>投稿なし。 <a href="{{ url_for('create') }}">作成</a></p>
+        {% endif %}
     </div>
 </body>
 </html>

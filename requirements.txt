@@ -1,7 +1,2 @@
-Flask
-python-dotenv
-psycopg2-binary
-Flask-Session
-bcrypt
-Flask-SQLAlchemy 
-gunicorn
+Flask==2.3.3\nWerkzeug==2.3.7\ngunicorn==21.2.0
+

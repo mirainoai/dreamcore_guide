@@ -3,45 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ログイン / 登録</title>
+    <title>ログイン - DreamCore Guide</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
-        {% if error %}
-            <p style="color: red;">{{ error }}</p>
-        {% endif %}
-
-        {% if is_register %}
-            <h2>ユーザー登録</h2>
-            <form method="POST" action="{{ url_for('register') }}">
-                <label for="username">ユーザー名:</label>
-                <input type="text" id="username" name="username" required><br><br>
-                
-                <label for="password">パスワード:</label>
-                <input type="password" id="password" name="password" required><br><br>
-                
-                <button type="submit">登録する</button>
-            </form>
-            <p>
-                <a href="{{ url_for('login') }}">ログインはこちら</a>
-            </p>
-
-        {% else %}
-            <h2>ログイン</h2>
-            <form method="POST" action="{{ url_for('login') }}">
-                <label for="username">ユーザー名:</label>
-                <input type="text" id="username" name="username" required><br><br>
-                
-                <label for="password">パスワード:</label>
-                <input type="password" id="password" name="password" required><br><br>
-                
-                <button type="submit">ログイン</button>
-            </form>
-            <p>
-                アカウントをお持ちでない場合は <a href="{{ url_for('register') }}">ユーザー登録</a>
-            </p>
-        {% endif %}
+        <h1>DreamCore Guide</h1>
+        <h2>ログイン</h2>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <p style="color: {{ 'green' if category == 'success' else 'red' }};">{{ message }}</p>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="POST">
+            <input type="text" name="username" placeholder="ユーザー名" required>
+            <input type="password" name="password" placeholder="パスワード" required>
+            <button type="submit">ログイン</button>
+        </form>
+        <p><a href="{{ url_for('register') }}">登録</a></p>
     </div>
 </body>
 </html>
