@@ -69,7 +69,7 @@ def index():
             "title": post["title"],
             "content": post["content"],
             "username": post["username"],
-            "created_at_fmt": post["created_at"].strftime("%Y-%m-%d %H:%M"),
+            "created_at_fmt": datetime.strptime(post["created_at"], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M") if isinstance(post["created_at"], str) else post["created_at"].strftime("%Y-%m-%d %H:%M"),
             "game_url": post["game_url"],
             "game_title": post["game_title"]
         } for post in posts
