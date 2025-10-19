@@ -10,6 +10,9 @@ app = Flask(__name__)
 load_dotenv()  # .envから環境変数を読み込み
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_fallback_key")  # セッション用
 app.config["SESSION_COOKIE_DOMAIN"] = os.environ.get("SESSION_COOKIE_DOMAIN", "localhost")
+app.config["SESSION_PERMANENT"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = 3600  # 1時間持続
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # セッションセキュリティ
 
 # 環境変数からDBパス取得
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "dreamcore_guide.db")
@@ -93,7 +96,8 @@ def login():
             user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             if user and check_password_hash(user["hash"], password):
                 session["user_id"] = user["id"]
-                print(f"Logged in user_id: {user['id']}")  # ログイン成功ログ
+                session.permanent = True  # 永続セッション
+                print(f"Logged in user_id: {user['id']} - Permanent session set")  # ログイン成功ログ
                 flash("ログイン成功！", "success")
                 return redirect(url_for("index"))
             flash("ユーザー名またはパスワードが間違っています。", "danger")
