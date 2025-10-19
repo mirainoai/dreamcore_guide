@@ -1,440 +1,340 @@
 import os
-import secrets
-import functools
-import time
-import psycopg2
-from psycopg2 import extras
-from flask import Flask, render_template, request, redirect, url_for, session, g, flash
-from werkzeug.utils import secure_filename
-from flask_session import Session # セッション永続化
-import bcrypt # パスワードハッシュ化
-from dotenv import load_dotenv # 環境変数ロード
-# 新しいインポート：Flask-SQLAlchemyを直接使用してSession警告を解消
-from flask_sqlalchemy import SQLAlchemy 
-# db_configから必要な関数をインポート
-from db_config import get_db_connection, create_tables, get_db_url 
+import sqlite3
+import re
+from functools import wraps
+from datetime import datetime, timedelta, timezone
 
-# ------------------------------
-# 1. 初期設定とアプリケーション設定
-# ------------------------------
-load_dotenv()
+from flask import Flask, render_template, request, session, redirect, url_for, flash, g
+from werkzeug.security import check_password_hash, generate_password_hash
 
+# --- ⚙️ アプリケーション設定 ---
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(16)) 
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'mp4'}
 
-# ------------------------------
-# 1.5. Flask-SessionとFlask-SQLAlchemy設定 (セッション維持の最終対策)
-# ------------------------------
+# 環境変数からシークレットキーを設定
+# 開発環境用にデフォルト値を設定しているが、Renderでは環境変数で上書き推奨
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your_super_secret_key_fallback")
 
-try:
-    db_url = get_db_url() 
-except ValueError as e:
-    print(f"Warning: {e}. Using local fallback URI.")
-    db_url = "postgresql://user:password@localhost/defaultdb" 
+# セッションCookieの設定
+# Renderデプロイ時には、セキュリティのためドメインを指定する必要がある
+# 例: .onrender.com を使用 (サブドメイン全体で共有)
+# 開発中はNoneまたはコメントアウト
+SESSION_COOKIE_DOMAIN = os.environ.get("SESSION_COOKIE_DOMAIN")
+if SESSION_COOKIE_DOMAIN:
+    app.config['SESSION_COOKIE_DOMAIN'] = SESSION_COOKIE_DOMAIN
 
-# 🚨 警告解消のため、標準のSQLAlchemy URIを設定
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+# データベースファイルパス
+DB_PATH = os.environ.get("DATABASE_PATH", "dreamcore_guide.db")
 
-# 🚨 警告解消のため、Flask-SQLAlchemyインスタンスを明示的に作成
-db_session = SQLAlchemy(app) 
+# Render環境変数 RUN_MIGRATIONS が 'True' の場合のみ、データベース初期化を実行
+RUN_MIGRATIONS = os.environ.get("RUN_MIGRATIONS", "False").lower() == 'true'
 
-# Flask-Session設定
-app.config["SESSION_TYPE"] = "sqlalchemy"
-app.config["SESSION_SQLALCHEMY_TABLE"] = "sessions"
-app.config["SESSION_PERMANENT"] = True
-app.config["SESSION_USE_SIGNER"] = True 
+# 日本時間 (JST) タイムゾーン定義
+JST = timezone(timedelta(hours=+9))
 
-# 🚨 警告解消のため、SQLAlchemyインスタンスをFlask-Sessionに渡す
-app.config["SESSION_SQLALCHEMY"] = db_session 
-
-# Render/HTTPS環境に対応したクッキー設定の強化
-app.config['SESSION_COOKIE_SECURE'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['PREFERRED_URL_SCHEME'] = 'https' 
-
-# 🚨 最終対策: Renderのドメイン名を明示的に指定
-# RenderのプライマリURL（例: dreamcore-guide.onrender.com）を設定
-APP_DOMAIN = os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost') 
-if APP_DOMAIN != 'localhost':
-    app.config['SESSION_COOKIE_DOMAIN'] = APP_DOMAIN
-
-# Flask-Sessionの初期化
-sess = Session(app) 
-
-# ------------------------------
-# 2. データベース接続管理 (psycopg2を使用)
-# ------------------------------
-
+# --- 🗄️ データベース接続ヘルパー ---
 def get_db():
-    """リクエストごとにデータベース接続を取得・管理する"""
+    # アプリケーションコンテキストにDB接続を保存し、リクエストごとに再利用する
     if 'db' not in g:
-        try:
-            g.db = get_db_connection()
-        except Exception as e:
-            app.logger.error(f"Failed to connect to database: {e}")
-            raise RuntimeError("Database connection failed.") from e
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row # 結果を辞書形式で取得
     return g.db
 
-@app.teardown_appcontext
 def close_db(e=None):
-    """リクエスト終了後にデータベース接続を閉じる"""
     db = g.pop('db', None)
     if db is not None:
         db.close()
 
-# ------------------------------
-# 3. ユーティリティ関数
-# ------------------------------
+# リクエスト完了時にデータベース接続を閉じるように登録
+app.teardown_appcontext(close_db)
 
-def hash_password(password):
-    """パスワードをbcryptでハッシュ化する"""
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt) 
-    return hashed.decode('utf-8') 
-
-def check_password(hashed_password, password):
-    """bcryptハッシュと入力されたパスワードを比較する"""
-    try:
-        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
-    except ValueError:
-        return False
-
-def allowed_file(filename):
-    """許可された拡張子のファイルかどうかをチェック"""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def login_required(view):
-    """ログインを要求するデコレータ"""
-    @functools.wraps(view)
-    def wrapped_view(*args, **kwargs):
-        if 'user_id' not in session: 
-            # ログインしていない場合はエラーメッセージをflash
-            flash('ログインが必要です。', 'error')
-            return redirect(url_for('login'))
-        return view(*args, **kwargs)
-    return wrapped_view
-
-# ------------------------------
-# 4. データベースマイグレーション
-# ------------------------------
-
-if os.environ.get('RUN_MIGRATIONS') == 'True':
-    print("--- 💡 Running initial database setup (Migrations)... ---")
-    try:
-        conn = get_db_connection()
-        create_tables(conn)
-        conn.close()
-        print("--- ✅ Database setup complete! Remember to remove RUN_MIGRATIONS=True from Render! ---")
-    except Exception as e:
-        print(f"--- ❌ Database setup failed: {e} ---")
-
-# ------------------------------
-# 5. ルーティングとDB操作 
-# ------------------------------
-
-@app.route('/')
-def index():
+# --- 🛠️ データベースマイグレーション (初期化) ---
+def init_db():
     db = get_db()
-    cursor = db.cursor(cursor_factory=extras.DictCursor)
     
-    # 既存のクエリを修正: g.game_url が正しいカラム名であることを確認し、別名（AS）指定を削除する
-    # エラーログ "column g.url does not exist" に対応
-    sql = """
-    SELECT 
-        g.id, g.title, g.game_url, g.created_at, u.username 
-    FROM games g 
-    JOIN users u ON g.user_id = u.id 
-    ORDER BY g.created_at DESC;
-    """
-    
-    try:
-        cursor.execute(sql)
-        games = cursor.fetchall()
-    except psycopg2.errors.UndefinedTable:
-        games = []
-        app.logger.warning("Warning: 'games' table does not exist. Returning empty list.")
-    except Exception as e:
-        db.rollback()
-        app.logger.error(f"Error fetching games: {e}")
-        games = []
+    # テーブル作成
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            hash TEXT NOT NULL
+        );
 
-    return render_template('index.html', games=games)
+        CREATE TABLE IF NOT EXISTS games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            slug TEXT UNIQUE NOT NULL,
+            genre TEXT,
+            developer TEXT
+        );
 
-# --- ログイン・登録・ログアウト ---
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            game_id INTEGER,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        );
+    """)
+    db.commit()
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        db = get_db()
-        cursor = db.cursor(cursor_factory=extras.DictCursor) 
-        
-        sql = "SELECT id, password_hash, username FROM users WHERE username = %s;"
-        try:
-            cursor.execute(sql, (username,))
-            user = cursor.fetchone()
-        except Exception as e:
-            db.rollback()
-            return render_template('login.html', error=f"データベースエラー: {e}")
-
-        if user and check_password(user['password_hash'], password):
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            # ログイン成功時にflashメッセージを表示
-            flash('ログインに成功しました！', 'success')
-            return redirect(url_for('index')) 
-        else:
-            return render_template('login.html', error='ユーザー名またはパスワードが違います')
-    
-    return render_template('login.html', is_register=False)
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        if len(username) < 3 or len(password) < 6:
-             return render_template('login.html', error='ユーザー名は3文字以上、パスワードは6文字以上が必要です', is_register=True)
-
-        hashed_password = hash_password(password)
-        db = get_db()
-        cursor = db.cursor()
-        
-        sql = "INSERT INTO users (username, password_hash) VALUES (%s, %s);"
-        try:
-            cursor.execute(sql, (username, hashed_password))
-            db.commit()
-            # 登録成功時にflashメッセージを表示
-            flash('ユーザー登録に成功しました。ログインしてください。', 'success')
-            return redirect(url_for('login')) 
-        except psycopg2.errors.UniqueViolation:
-            db.rollback()
-            return render_template('login.html', error='そのユーザー名は既に使用されています', is_register=True)
-        except Exception as e:
-            db.rollback()
-            return render_template('login.html', error=f"データベースエラー: {e}", is_register=True)
-            
-    return render_template('login.html', is_register=True)
-
-@app.route('/logout')
-def logout():
-    session.clear() 
-    # ログアウト時にflashメッセージを表示
-    flash('ログアウトしました。', 'info')
-    return redirect(url_for('index'))
-
-# --- スレッド作成 ---
-
-@app.route('/create_game', methods=['GET', 'POST'])
-@login_required
-def create_game():
-    if request.method == 'POST':
-        title = request.form['title']
-        game_url = request.form.get('game_url', '') 
-        user_id = session['user_id']
-        
-        if not title:
-            return render_template('create_game.html', error="タイトルは必須です")
-
-        db = get_db()
-        cursor = db.cursor(cursor_factory=extras.DictCursor)
-        
-        # game_url を使用
-        sql = "INSERT INTO games (title, user_id, game_url) VALUES (%s, %s, %s) RETURNING id;"
-        
-        try:
-            cursor.execute(sql, (title, user_id, game_url))
-            new_game_id = cursor.fetchone()['id']
-            db.commit()
-            flash('新しいスレッドを作成しました！', 'success')
-            return redirect(url_for('game_thread', game_id=new_game_id))
-        except Exception as e:
-            db.rollback()
-            return render_template('create_game.html', error=f"データベースエラー: {e}")
-
-    return render_template('create_game.html')
-
-# --- スレッド詳細とコメント投稿 ---
-
-@app.route('/thread/<int:game_id>', methods=['GET', 'POST'])
-def game_thread(game_id):
-    db = get_db()
-    cursor = db.cursor(cursor_factory=extras.DictCursor) 
-    
-    if request.method == 'POST':
-        if 'user_id' not in session:
-            # flash('コメント投稿にはログインが必要です。', 'error')
-            return redirect(url_for('login'))
-
-        content = request.form.get('content', '').strip()
-        media_file = request.files.get('media_file')
-        user_id = session['user_id']
-        media_filename = None
-
-        if media_file and media_file.filename != '' and allowed_file(media_file.filename):
-            filename = secure_filename(media_file.filename)
-            media_filename = f"{int(time.time())}_{filename}"
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], media_filename)
-            media_file.save(filepath)
-            
-        if not content and not media_filename:
-            return redirect(url_for('game_thread', game_id=game_id)) 
-
-        try:
-            sql = "INSERT INTO posts (game_id, user_id, content, media_url) VALUES (%s, %s, %s, %s) RETURNING id;"
-            cursor.execute(sql, (game_id, user_id, content, media_filename))
-            cursor.fetchone() 
-            db.commit()
-            flash('コメントを投稿しました。', 'success')
-            return redirect(url_for('game_thread', game_id=game_id))
-        
-        except Exception as e:
-            db.rollback()
-            app.logger.error(f"Post error on game {game_id}: {e}")
-            flash(f"コメント投稿時のデータベースエラーが発生しました: {e}", 'error')
-            return redirect(url_for('game_thread', game_id=game_id))
-
-    # GET リクエスト (スレッド表示)
-    
-    game_sql = """
-    SELECT 
-        g.id, g.title, g.game_url, g.created_at, u.username, u.id as creator_id
-    FROM games g 
-    JOIN users u ON g.user_id = u.id 
-    WHERE g.id = %s;
-    """
-    cursor.execute(game_sql, (game_id,))
-    game = cursor.fetchone()
-    
-    if not game:
-        return "ゲームスレッドが見つかりません", 404
-
-    posts_sql = """
-    SELECT 
-        p.id, p.content, p.media_url, p.created_at, u.username, 
-        COUNT(l.id) AS like_count,
-        EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = %s) AS user_liked
-    FROM posts p 
-    JOIN users u ON p.user_id = u.id
-    LEFT JOIN likes l ON p.id = l.post_id
-    WHERE p.game_id = %s
-    GROUP BY p.id, u.username, p.content, p.media_url, p.created_at
-    ORDER BY p.created_at ASC;
-    """
-    
-    current_user_id = session.get('user_id', -1) 
-    cursor.execute(posts_sql, (current_user_id, game_id))
-    posts = cursor.fetchall()
-    
-    return render_template('game_thread.html', game=game, posts=posts, user_id=current_user_id)
-
-# --- いいね処理・スレッド削除 ---
-
-@app.route('/like/<int:post_id>', methods=['POST'])
-@login_required
-def like_post(post_id):
-    user_id = session['user_id']
-    db = get_db()
-    cursor = db.cursor()
-
-    check_sql = "SELECT id FROM likes WHERE post_id = %s AND user_id = %s;"
-    cursor.execute(check_sql, (post_id, user_id))
-    existing_like = cursor.fetchone()
-
-    try:
-        if existing_like:
-            delete_sql = "DELETE FROM likes WHERE post_id = %s AND user_id = %s;"
-            cursor.execute(delete_sql, (post_id, user_id))
-            flash('いいねを取り消しました。', 'info')
-        else:
-            insert_sql = "INSERT INTO likes (post_id, user_id) VALUES (%s, %s) RETURNING id;"
-            cursor.execute(insert_sql, (post_id, user_id))
-            cursor.fetchone() 
-            flash('いいねしました！', 'success')
-        
+    # 初期データを挿入
+    # ゲームがまだ存在しない場合のみ挿入
+    cursor = db.execute("SELECT COUNT(*) FROM games")
+    if cursor.fetchone()[0] == 0:
+        db.executescript("""
+            INSERT INTO games (title, slug, genre, developer) VALUES 
+            ('Echoes of the Void', 'echoes-of-the-void', 'Sci-Fi Horror', 'DreamSoft Studios'),
+            ('Neon Dynasty', 'neon-dynasty', 'Cyberpunk RPG', 'PixelForge');
+        """)
         db.commit()
 
-    except Exception as e:
-        db.rollback()
-        app.logger.error(f"Like/Unlike Error: {e}")
-        flash('いいね処理中にエラーが発生しました。', 'error')
-        return redirect(request.referrer or url_for('index'))
+if RUN_MIGRATIONS:
+    print("--- 💡 Running initial database setup (Migrations)... ---")
+    with app.app_context():
+        init_db()
+    print("--- ✅ Database setup complete! Remember to remove RUN_MIGRATIONS=True from Render! ---")
 
-    return redirect(request.referrer or url_for('index'))
-
-@app.route('/delete_thread/<int:game_id>', methods=['POST'])
-@login_required
-def delete_thread(game_id):
-    user_id = session['user_id']
-    db = get_db()
-    cursor = db.cursor(cursor_factory=extras.DictCursor)
-    
-    try:
-        cursor.execute("SELECT user_id FROM games WHERE id = %s;", (game_id,))
-        game = cursor.fetchone()
-
-        if game and game['user_id'] == user_id:
-            cursor.execute("DELETE FROM likes WHERE post_id IN (SELECT id FROM posts WHERE game_id = %s);", (game_id,))
-            cursor.execute("DELETE FROM posts WHERE game_id = %s;", (game_id,))
-            cursor.execute("DELETE FROM games WHERE id = %s;", (game_id,))
-            db.commit()
-            flash('スレッドを削除しました。', 'success')
-        else:
-            flash('スレッドを削除する権限がありません。', 'error')
-    except Exception as e:
-        db.rollback()
-        app.logger.error(f"Error deleting thread {game_id}: {e}")
-        flash(f"スレッド削除中にエラーが発生しました: {e}", 'error')
-    
-    return redirect(url_for('index'))
+# --- 🔐 ログイン状態チェックデコレータ ---
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session.get("user_id") is None:
+            flash("ログインが必要です。", "warning")
+            return redirect(url_for("login"))
+        g.user_id = session.get("user_id")
+        return f(*args, **kwargs)
+    return decorated_function
 
 # --- 🚨 デバッグ用: 全データ削除機能 🚨 ---
 @app.route('/debug/reset_data', methods=['GET', 'POST'])
 def reset_data():
+    if not app.debug and os.environ.get("RENDER_EXTERNAL_URL"):
+        # 本番環境ではこのデバッグ機能はセキュリティ上、無効にするか、パスワード保護を推奨
+        # 今回はデプロイテストのため、一時的に Render でもアクセス可能とする
+        pass 
+        
+    db = get_db()
     if request.method == 'POST':
+        # データベースをリセット
+        db.executescript("""
+            DELETE FROM posts;
+            DELETE FROM games;
+            DELETE FROM users;
+            VACUUM;
+        """)
+        db.commit()
+        # セッションもリセット
+        session.clear()
+        
+        # データベースを再初期化して初期ゲームデータを再挿入
+        init_db()
+        flash("データベースの全データが削除され、初期化されました。", "success")
+        return redirect(url_for('index'))
+    
+    # GETリクエストの場合、確認画面を表示
+    return render_template("reset_data.html")
+
+
+# --- 🗺️ ルーティング ---
+
+@app.route("/")
+def index():
+    db = get_db()
+    
+    # 修正済みクエリ: g.url を削除し、代わりに g.slug を取得
+    posts = db.execute("""
+        SELECT 
+            p.id, p.user_id, p.title, p.content, p.created_at, u.username, 
+            g.id AS game_id, g.title AS game_title, g.slug AS game_slug
+        FROM 
+            posts p
+        JOIN users u ON p.user_id = u.id
+        LEFT JOIN games g ON p.game_id = g.id
+        ORDER BY p.created_at DESC
+    """).fetchall()
+
+    # 投稿データを整形
+    formatted_posts = []
+    for post in posts:
+        post_dict = dict(post)
+        
+        # 投稿日時のフォーマットとJSTへの変換
+        dt_utc = datetime.strptime(post_dict['created_at'], '%Y-%m-%d %H:%M:%S')
+        dt_jst = dt_utc.replace(tzinfo=timezone.utc).astimezone(JST)
+        post_dict['created_at_fmt'] = dt_jst.strftime('%Y年%m月%d日 %H:%M')
+
+        # ゲームへのリンクURLを生成
+        if post_dict['game_id'] and post_dict['game_slug']:
+            post_dict['game_url'] = url_for('game_detail', game_slug=post_dict['game_slug'], game_id=post_dict['game_id'])
+        else:
+            post_dict['game_url'] = None
+
+        formatted_posts.append(post_dict)
+
+    return render_template("index.html", posts=formatted_posts)
+
+# --- ユーザー認証 ---
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    """ユーザー登録"""
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        confirmation = request.form.get("confirmation")
+
+        if not username:
+            flash("ユーザー名を入力してください。", "danger")
+            return render_template("register.html")
+        if not password:
+            flash("パスワードを入力してください。", "danger")
+            return render_template("register.html")
+        if password != confirmation:
+            flash("パスワードが一致しません。", "danger")
+            return render_template("register.html", username=username)
+
         db = get_db()
-        cursor = db.cursor()
+        
+        # パスワードの複雑さチェック (例)
+        if len(password) < 8 or not re.search("[a-z]", password) or not re.search("[A-Z]", password) or not re.search("[0-9]", password):
+             flash("パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。", "danger")
+             return render_template("register.html", username=username)
         
         try:
-            # 外部キー制約のあるテーブルから順に削除 (CASCADEを使うため、順番は必須ではないが一応)
-            cursor.execute("DELETE FROM sessions;")
-            cursor.execute("DELETE FROM likes;")
-            cursor.execute("DELETE FROM posts;")
-            cursor.execute("DELETE FROM games;")
-            cursor.execute("DELETE FROM users;")
+            # ユーザー名をユニークにチェックして挿入
+            hash = generate_password_hash(password)
+            cursor = db.execute("INSERT INTO users (username, hash) VALUES (?, ?)", (username, hash))
             db.commit()
             
-            # セッションもクリア
-            session.clear()
+            # 登録成功後、自動的にログインさせる
+            session["user_id"] = cursor.lastrowid
+            flash("ユーザー登録が完了しました！", "success")
+            return redirect(url_for("index"))
             
-            # メッセージと共にトップページへリダイレクト
-            flash('🚨 すべてのユーザー、投稿、ゲーム、セッションデータがデータベースから削除されました。', 'success')
-            return redirect(url_for('index'))
+        except sqlite3.IntegrityError:
+            flash("そのユーザー名は既に使用されています。", "danger")
+            return render_template("register.html")
+
+    return render_template("register.html")
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """ユーザーログイン"""
+    # 既にログインしている場合はトップへリダイレクト
+    if session.get("user_id") is not None:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+
+        if not username or not password:
+            flash("ユーザー名とパスワードの両方を入力してください。", "danger")
+            return render_template("login.html")
+
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+        if user is None or not check_password_hash(user["hash"], password):
+            flash("ユーザー名またはパスワードが正しくありません。", "danger")
+            return render_template("login.html", username=username)
+
+        # セッションにユーザーIDを保存
+        session["user_id"] = user["id"]
         
-        except Exception as e:
-            db.rollback()
-            app.logger.error(f"Error resetting database: {e}")
-            flash(f"🚨 データベースリセット中にエラーが発生しました: {e}", 'error')
-            return redirect(url_for('index'))
+        flash("ログインしました。", "success")
+        return redirect(url_for("index"))
 
-    return """
-    <form method="post">
-        <h1>🚨 警告: 全データ削除 🚨</h1>
-        <p>この操作はデータベースの全てのユーザー、投稿、ゲームデータを完全に削除し、元に戻せません。</p>
-        <p>続行しますか？</p>
-        <button type="submit" style="padding: 10px; background-color: red; color: white; border: none; cursor: pointer;">はい、全て削除します</button>
-        <a href="/" style="margin-left: 20px;">キャンセル</a>
-    </form>
-    """
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    """ユーザーログアウト"""
+    session.clear()
+    flash("ログアウトしました。", "info")
+    return redirect(url_for("index"))
+
+# --- 投稿機能 ---
+
+@app.route("/create", methods=["GET", "POST"])
+@login_required
+def create_post():
+    db = get_db()
+    games = db.execute("SELECT id, title, slug FROM games ORDER BY title").fetchall()
+    
+    if request.method == "POST":
+        title = request.form.get("title")
+        content = request.form.get("content")
+        game_id = request.form.get("game_id")
+
+        if not title or not content:
+            flash("タイトルと内容の両方を入力してください。", "danger")
+            return render_template("create_post.html", games=games)
+
+        # game_idが空の場合はNULLを挿入
+        game_id = int(game_id) if game_id and game_id != 'None' else None
+
+        db.execute(
+            "INSERT INTO posts (user_id, game_id, title, content) VALUES (?, ?, ?, ?)",
+            (g.user_id, game_id, title, content)
+        )
+        db.commit()
+        flash("新しいガイド投稿が作成されました！", "success")
+        return redirect(url_for("index"))
+
+    return render_template("create_post.html", games=games)
+
+# --- ゲーム詳細 ---
+
+@app.route("/games/<game_slug>/<int:game_id>")
+def game_detail(game_slug, game_id):
+    db = get_db()
+    
+    # ゲーム情報を取得
+    game = db.execute(
+        "SELECT id, title, genre, developer FROM games WHERE id = ? AND slug = ?", 
+        (game_id, game_slug)
+    ).fetchone()
+    
+    if game is None:
+        flash("指定されたゲームは見つかりませんでした。", "danger")
+        return redirect(url_for("index"))
+
+    # そのゲームに関連する投稿を取得
+    posts = db.execute("""
+        SELECT 
+            p.id, p.title, p.content, p.created_at, u.username
+        FROM 
+            posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.game_id = ?
+        ORDER BY p.created_at DESC
+    """, (game_id,)).fetchall()
+    
+    formatted_posts = []
+    for post in posts:
+        post_dict = dict(post)
+        # 投稿日時のフォーマット
+        dt_utc = datetime.strptime(post_dict['created_at'], '%Y-%m-%d %H:%M:%S')
+        dt_jst = dt_utc.replace(tzinfo=timezone.utc).astimezone(JST)
+        post_dict['created_at_fmt'] = dt_jst.strftime('%Y年%m月%d日 %H:%M')
+        formatted_posts.append(post_dict)
+    
+
+    return render_template("game_detail.html", game=game, posts=formatted_posts)
 
 
-if __name__ == '__main__':
-    if not os.path.exists('static/uploads'):
-        os.makedirs('static/uploads')
-    app.run(debug=True)
+# --- 実行 ---
+if __name__ == "__main__":
+    # 開発環境でのみ動作する設定
+    # RenderではGunicornが起動するため、このブロックは実行されない
+    if RUN_MIGRATIONS:
+        print("💡 開発環境: データベースを初期化中...")
+        with app.app_context():
+            init_db()
+        print("✅ 開発環境: データベース初期化完了")
+        
+    app.run(debug=True, port=8000)
